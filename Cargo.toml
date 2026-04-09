@@ -1,0 +1,21 @@
+[package]
+name = "tmd"
+version = "0.1.0"
+edition = "2021"
+description = "Terminal markdown previewer, powered by carbonyl"
+
+[dependencies]
+axum = "0.7"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "process", "sync", "time", "net"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tower-http = { version = "0.5", features = ["fs"] }
+pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
+notify = "6"
+clap = { version = "4", features = ["derive"] }
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"

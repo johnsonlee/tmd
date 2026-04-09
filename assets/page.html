@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{TITLE}}</title>
+<style>
+  :root { color-scheme: dark; --fg:#e6edf3; --muted:#9da7b3; --bg:#0d1117; --accent:#58a6ff; --border:#30363d; --code-bg:#161b22; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; padding:0; background:var(--bg); color:var(--fg); }
+  body { font-family:-apple-system,system-ui,"Segoe UI",sans-serif; line-height:1.6; padding:1.5rem 2rem; max-width:90ch; margin:0 auto; }
+  h1,h2,h3,h4 { border-bottom:1px solid var(--border); padding-bottom:.2em; }
+  h1 { font-size:1.8rem; } h2 { font-size:1.4rem; }
+  a { color:var(--accent); text-decoration:none; } a:hover { text-decoration:underline; }
+  code { background:var(--code-bg); padding:.1em .35em; border-radius:4px; font-size:.95em; }
+  pre { background:var(--code-bg); padding:1em; border-radius:6px; overflow-x:auto; border:1px solid var(--border); }
+  pre code { background:transparent; padding:0; }
+  blockquote { border-left:3px solid var(--accent); margin:0; padding:.2em 1em; color:var(--muted); }
+  table { border-collapse:collapse; width:100%; }
+  th, td { border:1px solid var(--border); padding:.4em .8em; }
+  img { max-width:100%; }
+  hr { border:none; border-top:1px solid var(--border); }
+  ul, ol { padding-left:1.5em; }
+</style>
+</head>
+<body>
+{{BODY}}
+<script>
+(function(){try{var es=new EventSource('/__tmd/events');es.onmessage=function(e){if(e.data==='reload')location.reload();};}catch(_){}})();
+</script>
+</body>
+</html>
