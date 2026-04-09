@@ -13,7 +13,6 @@
     --accent: #58a6ff;
     --border: #30363d;
     --code-bg: #161b22;
-    --sidebar-w: 260px;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); }
@@ -26,8 +25,8 @@
   .tmd-layout { display: flex; min-height: 100vh; align-items: flex-start; }
 
   .tmd-sidebar {
-    width: var(--sidebar-w);
-    flex: 0 0 var(--sidebar-w);
+    flex: 0 0 22%;
+    max-width: 22%;
     background: var(--bg-alt);
     border-right: 1px solid var(--border);
     padding: 1.2rem 1rem;
@@ -70,8 +69,7 @@
   .tmd-content {
     flex: 1 1 auto;
     min-width: 0;
-    padding: 1.5rem 2rem;
-    max-width: 90ch;
+    padding: 1.2rem 1.6rem;
   }
 
   h1, h2, h3, h4 {
