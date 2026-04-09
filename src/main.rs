@@ -21,7 +21,10 @@ use axum::{
 };
 use clap::Parser as ClapParser;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use pulldown_cmark::{html as md_html, Options, Parser as MdParser};
+use pulldown_cmark::{
+    html as md_html, CowStr, Event as MdEvent, HeadingLevel, Options, Parser as MdParser, Tag,
+    TagEnd,
+};
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
@@ -55,6 +58,132 @@ struct AppState {
     tx: broadcast::Sender<()>,
 }
 
+struct TocEntry {
+    level: u32,
+    id: String,
+    text: String,
+}
+
+fn slugify(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut last_dash = true;
+    for c in s.chars() {
+        if c.is_alphanumeric() {
+            for lc in c.to_lowercase() {
+                out.push(lc);
+            }
+            last_dash = false;
+        } else if !last_dash {
+            out.push('-');
+            last_dash = true;
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    if out.is_empty() {
+        "section".into()
+    } else {
+        out
+    }
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// Walks the markdown event stream, injecting auto-generated anchor IDs on
+/// every heading that does not already have one, and collecting a TOC.
+fn process_events<'a>(parser: MdParser<'a>) -> (Vec<MdEvent<'a>>, Vec<TocEntry>) {
+    let mut events: Vec<MdEvent<'a>> = Vec::new();
+    let mut toc: Vec<TocEntry> = Vec::new();
+    let mut heading_text: Option<String> = None;
+    let mut heading_start_idx: Option<usize> = None;
+    let mut id_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+
+    for ev in parser {
+        match &ev {
+            MdEvent::Start(Tag::Heading { .. }) => {
+                heading_text = Some(String::new());
+                heading_start_idx = Some(events.len());
+                events.push(ev);
+            }
+            MdEvent::End(TagEnd::Heading(level)) => {
+                let level_num = match level {
+                    HeadingLevel::H1 => 1,
+                    HeadingLevel::H2 => 2,
+                    HeadingLevel::H3 => 3,
+                    HeadingLevel::H4 => 4,
+                    HeadingLevel::H5 => 5,
+                    HeadingLevel::H6 => 6,
+                };
+                if let (Some(text), Some(idx)) = (heading_text.take(), heading_start_idx.take()) {
+                    if let Some(MdEvent::Start(Tag::Heading { id, .. })) = events.get_mut(idx) {
+                        let base_id = id
+                            .as_ref()
+                            .map(|c| c.to_string())
+                            .unwrap_or_else(|| slugify(&text));
+                        let count = id_counts.entry(base_id.clone()).or_insert(0);
+                        let final_id = if *count == 0 {
+                            base_id.clone()
+                        } else {
+                            format!("{base_id}-{count}")
+                        };
+                        *count += 1;
+                        *id = Some(CowStr::Boxed(final_id.clone().into_boxed_str()));
+                        toc.push(TocEntry {
+                            level: level_num,
+                            id: final_id,
+                            text,
+                        });
+                    }
+                }
+                events.push(ev);
+            }
+            MdEvent::Text(t) => {
+                if let Some(buf) = &mut heading_text {
+                    buf.push_str(t);
+                }
+                events.push(ev);
+            }
+            MdEvent::Code(t) => {
+                if let Some(buf) = &mut heading_text {
+                    buf.push_str(t);
+                }
+                events.push(ev);
+            }
+            _ => events.push(ev),
+        }
+    }
+    (events, toc)
+}
+
+fn render_toc(entries: &[TocEntry]) -> String {
+    // Skip h1 (normally the document title) — show h2+ in the sidebar.
+    let items: Vec<&TocEntry> = entries.iter().filter(|e| e.level >= 2).collect();
+    if items.is_empty() {
+        return r#"<p class="tmd-toc-empty">No sections.</p>"#.into();
+    }
+    let min_level = items.iter().map(|e| e.level).min().unwrap_or(2);
+    let mut out = String::from(r#"<ul class="tmd-toc-list">"#);
+    for e in items {
+        let depth = e.level - min_level;
+        out.push_str(&format!(
+            r##"<li class="tmd-toc-l{}" style="padding-left:{}px"><a href="#{}">{}</a></li>"##,
+            e.level,
+            depth * 14,
+            html_escape(&e.id),
+            html_escape(&e.text)
+        ));
+    }
+    out.push_str("</ul>");
+    out
+}
+
 fn render_page(md_path: &std::path::Path) -> std::io::Result<String> {
     let src = std::fs::read_to_string(md_path)?;
     let mut opts = Options::empty();
@@ -65,13 +194,18 @@ fn render_page(md_path: &std::path::Path) -> std::io::Result<String> {
     opts.insert(Options::ENABLE_SMART_PUNCTUATION);
     opts.insert(Options::ENABLE_HEADING_ATTRIBUTES);
     let parser = MdParser::new_ext(&src, opts);
+    let (events, toc) = process_events(parser);
     let mut body = String::new();
-    md_html::push_html(&mut body, parser);
+    md_html::push_html(&mut body, events.into_iter());
+    let toc_html = render_toc(&toc);
     let title = md_path
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("tmd");
-    Ok(PAGE_TMPL.replace("{{TITLE}}", title).replace("{{BODY}}", &body))
+    Ok(PAGE_TMPL
+        .replace("{{TITLE}}", title)
+        .replace("{{TOC}}", &toc_html)
+        .replace("{{BODY}}", &body))
 }
 
 async fn index(State(st): State<AppState>) -> Response {
