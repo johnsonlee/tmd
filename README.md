@@ -7,6 +7,9 @@ HTTP server with live-reload, and launches `carbonyl` pointed at the URL —
 so the page shows up **inside your terminal** as a real browser render,
 complete with images, tables, links, and CSS.
 
+<img alt="tmd" src="https://github.com/user-attachments/assets/469bb462-025e-4451-a576-56b33cf944e7" />
+
+
 ## Install
 
 ```bash
