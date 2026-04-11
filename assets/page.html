@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <title>{{TITLE}}</title>
 <style>
+  /* --- Dark theme (default) --- */
   :root {
     color-scheme: dark;
     --fg: #e6edf3;
@@ -13,7 +14,35 @@
     --accent: #58a6ff;
     --border: #30363d;
     --code-bg: #161b22;
+    --handle-hover: #58a6ff;
   }
+
+  /* --- Light theme --- */
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      color-scheme: light;
+      --fg: #1f2328;
+      --muted: #656d76;
+      --bg: #ffffff;
+      --bg-alt: #f6f8fa;
+      --accent: #0969da;
+      --border: #d0d7de;
+      --code-bg: #f6f8fa;
+      --handle-hover: #0969da;
+    }
+  }
+  [data-theme="light"] {
+    color-scheme: light;
+    --fg: #1f2328;
+    --muted: #656d76;
+    --bg: #ffffff;
+    --bg-alt: #f6f8fa;
+    --accent: #0969da;
+    --border: #d0d7de;
+    --code-bg: #f6f8fa;
+    --handle-hover: #0969da;
+  }
+
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); }
   body {
@@ -21,30 +50,54 @@
     line-height: 1.6;
   }
 
-  /* Two-column layout: sticky TOC sidebar on the left, content on the right. */
-  .tmd-layout { display: flex; min-height: 100vh; align-items: flex-start; }
+  /* --- Two-column layout --- */
+  .tmd-layout {
+    display: flex;
+    min-height: 100vh;
+    align-items: stretch;
+  }
 
   .tmd-sidebar {
     flex: 0 0 clamp(120px, 20%, 240px);
     max-width: 240px;
     background: var(--bg-alt);
     border-right: 1px solid var(--border);
-    padding: 1.2rem 1rem;
+    font-size: 0.9rem;
+    position: relative;
+  }
+  .tmd-sidebar-inner {
     position: sticky;
     top: 0;
     max-height: 100vh;
     overflow-y: auto;
-    font-size: 0.9rem;
+    padding: 1.2rem 1rem;
   }
-  .tmd-sidebar h2 {
+  .tmd-sidebar-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin: 0 0 0.6rem 0;
+  }
+  .tmd-sidebar-header h2 {
     font-size: 0.75rem;
     text-transform: uppercase;
     letter-spacing: 0.08em;
     color: var(--muted);
-    margin: 0 0 0.6rem 0;
+    margin: 0;
     padding: 0;
     border: none;
   }
+  .tmd-theme-toggle {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 0.7rem;
+    padding: 0.15rem 0.4rem;
+    border-radius: 3px;
+    cursor: pointer;
+    line-height: 1;
+  }
+  .tmd-theme-toggle:hover { color: var(--accent); border-color: var(--accent); }
 
   .tmd-toc-list { list-style: none; margin: 0; padding: 0; }
   .tmd-toc-list li { margin: 0.1rem 0; line-height: 1.35; }
@@ -66,6 +119,17 @@
   .tmd-toc-l6 > a { color: var(--muted); font-size: 0.85rem; }
   .tmd-toc-empty { color: var(--muted); font-style: italic; margin: 0; }
 
+  /* --- Resize handle --- */
+  .tmd-resize-handle {
+    flex: 0 0 4px;
+    cursor: col-resize;
+    background: transparent;
+    transition: background 0.15s;
+  }
+  .tmd-resize-handle:hover,
+  .tmd-resize-handle.active { background: var(--handle-hover); }
+
+  /* --- Content area --- */
   .tmd-content {
     flex: 1 1 auto;
     min-width: 0;
@@ -108,7 +172,7 @@
   ul, ol { padding-left: 1.5em; }
 
   @media (max-width: 480px) {
-    .tmd-sidebar { display: none; }
+    .tmd-sidebar, .tmd-resize-handle { display: none; }
     .tmd-content { padding: 1rem; }
   }
 </style>
@@ -116,15 +180,113 @@
 <body>
 <div class="tmd-layout">
   <aside class="tmd-sidebar">
-    <h2>Contents</h2>
-    {{TOC}}
+    <div class="tmd-sidebar-inner">
+      <div class="tmd-sidebar-header">
+        <h2>Contents</h2>
+        <button class="tmd-theme-toggle" id="themeToggle">Light</button>
+      </div>
+      {{TOC}}
+    </div>
   </aside>
+  <div class="tmd-resize-handle" id="resizeHandle"></div>
   <main class="tmd-content">
     {{BODY}}
   </main>
 </div>
+<script type="module">
+import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+
+function mermaidTheme() {
+  var t = document.documentElement.getAttribute('data-theme') ||
+    (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+  return t === 'dark' ? 'dark' : 'default';
+}
+
+function renderMermaid() {
+  // Reset any previously rendered diagrams so mermaid.run() picks them up again
+  document.querySelectorAll('.mermaid[data-processed]').forEach(function(el) {
+    el.removeAttribute('data-processed');
+    el.innerHTML = el.getAttribute('data-source');
+  });
+  mermaid.initialize({ startOnLoad: false, theme: mermaidTheme() });
+  mermaid.run({ querySelector: '.mermaid' });
+}
+
+// Convert <pre><code class="language-mermaid"> to <div class="mermaid">
+document.querySelectorAll('pre > code.language-mermaid').forEach(function(el) {
+  var pre = el.parentElement;
+  var div = document.createElement('div');
+  div.className = 'mermaid';
+  div.textContent = el.textContent;
+  div.setAttribute('data-source', el.textContent);
+  pre.replaceWith(div);
+});
+
+renderMermaid();
+
+// Re-render on theme change
+window.__tmdRenderMermaid = renderMermaid;
+</script>
 <script>
-(function(){try{var es=new EventSource('/__tmd/events');es.onmessage=function(e){if(e.data==='reload')location.reload();};}catch(_){}})();
+(function(){
+  // --- SSE live reload ---
+  try {
+    var es = new EventSource('/__tmd/events');
+    es.onmessage = function(e) { if (e.data === 'reload') location.reload(); };
+  } catch(_) {}
+
+  // --- Theme toggle ---
+  var html = document.documentElement;
+  var btn = document.getElementById('themeToggle');
+  function currentTheme() {
+    return html.getAttribute('data-theme') ||
+      (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+  }
+  function updateBtn() {
+    btn.textContent = currentTheme() === 'dark' ? 'Light' : 'Dark';
+  }
+  btn.addEventListener('click', function() {
+    var next = currentTheme() === 'dark' ? 'light' : 'dark';
+    html.setAttribute('data-theme', next);
+    try { localStorage.setItem('tmd-theme', next); } catch(_) {}
+    updateBtn();
+    if (window.__tmdRenderMermaid) window.__tmdRenderMermaid();
+  });
+  var saved = null;
+  try { saved = localStorage.getItem('tmd-theme'); } catch(_) {}
+  if (saved) html.setAttribute('data-theme', saved);
+  updateBtn();
+
+  // --- Resizable sidebar ---
+  var handle = document.getElementById('resizeHandle');
+  var sidebar = document.querySelector('.tmd-sidebar');
+  if (handle && sidebar) {
+    var startX, startW;
+    handle.addEventListener('mousedown', function(e) {
+      startX = e.clientX;
+      startW = sidebar.offsetWidth;
+      handle.classList.add('active');
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+      e.preventDefault();
+    });
+    function onMove(e) {
+      var w = Math.min(240, Math.max(120, startW + (e.clientX - startX)));
+      sidebar.style.flexBasis = w + 'px';
+      sidebar.style.maxWidth = w + 'px';
+      try { localStorage.setItem('tmd-sidebar-w', w); } catch(_) {}
+    }
+    function onUp() {
+      handle.classList.remove('active');
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    }
+    try {
+      var sw = localStorage.getItem('tmd-sidebar-w');
+      if (sw) { sidebar.style.flexBasis = sw + 'px'; sidebar.style.maxWidth = sw + 'px'; }
+    } catch(_) {}
+  }
+})();
 </script>
 </body>
 </html>
