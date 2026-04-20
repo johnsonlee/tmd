@@ -193,6 +193,8 @@ fn render_page(md_path: &std::path::Path) -> std::io::Result<String> {
     opts.insert(Options::ENABLE_TASKLISTS);
     opts.insert(Options::ENABLE_SMART_PUNCTUATION);
     opts.insert(Options::ENABLE_HEADING_ATTRIBUTES);
+    opts.insert(Options::ENABLE_YAML_STYLE_METADATA_BLOCKS);
+    opts.insert(Options::ENABLE_PLUSES_DELIMITED_METADATA_BLOCKS);
     let parser = MdParser::new_ext(&src, opts);
     let (events, toc) = process_events(parser);
     let mut body = String::new();
