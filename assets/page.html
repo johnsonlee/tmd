@@ -59,7 +59,6 @@
 
   .tmd-sidebar {
     flex: 0 0 clamp(120px, 20%, 240px);
-    max-width: 240px;
     background: var(--bg-alt);
     border-right: 1px solid var(--border);
     font-size: 0.9rem;
@@ -121,13 +120,37 @@
 
   /* --- Resize handle --- */
   .tmd-resize-handle {
-    flex: 0 0 4px;
+    flex: 0 0 6px;
     cursor: col-resize;
+    background: transparent;
+    position: relative;
+    user-select: none;
+    touch-action: none;
+    z-index: 2;
+  }
+  .tmd-resize-handle::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: -4px;
+    right: -4px;
+  }
+  .tmd-resize-handle::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    width: 2px;
+    transform: translateX(-50%);
     background: transparent;
     transition: background 0.15s;
   }
-  .tmd-resize-handle:hover,
-  .tmd-resize-handle.active { background: var(--handle-hover); }
+  .tmd-resize-handle:hover::after,
+  .tmd-resize-handle.active::after { background: var(--handle-hover); }
+  body.tmd-resizing,
+  body.tmd-resizing * { user-select: none !important; cursor: col-resize !important; }
 
   /* --- Content area --- */
   .tmd-content {
@@ -261,29 +284,53 @@ window.__tmdRenderMermaid = renderMermaid;
   var handle = document.getElementById('resizeHandle');
   var sidebar = document.querySelector('.tmd-sidebar');
   if (handle && sidebar) {
-    var startX, startW;
-    handle.addEventListener('mousedown', function(e) {
-      startX = e.clientX;
-      startW = sidebar.offsetWidth;
-      handle.classList.add('active');
-      document.addEventListener('mousemove', onMove);
-      document.addEventListener('mouseup', onUp);
-      e.preventDefault();
-    });
-    function onMove(e) {
-      var w = Math.min(240, Math.max(120, startW + (e.clientX - startX)));
+    var MIN_W = 120;
+    function maxW() {
+      return Math.max(MIN_W + 40, Math.floor(window.innerWidth * 0.6));
+    }
+    function applyWidth(w) {
       sidebar.style.flexBasis = w + 'px';
       sidebar.style.maxWidth = w + 'px';
+    }
+    var startX = 0, startW = 0, pointerId = null;
+    function onMove(e) {
+      var w = Math.min(maxW(), Math.max(MIN_W, startW + (e.clientX - startX)));
+      applyWidth(w);
       try { localStorage.setItem('tmd-sidebar-w', w); } catch(_) {}
+      e.preventDefault();
     }
-    function onUp() {
+    function onUp(e) {
       handle.classList.remove('active');
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
+      document.body.classList.remove('tmd-resizing');
+      if (pointerId !== null) {
+        try { handle.releasePointerCapture(pointerId); } catch(_) {}
+        pointerId = null;
+      }
+      handle.removeEventListener('pointermove', onMove);
+      handle.removeEventListener('pointerup', onUp);
+      handle.removeEventListener('pointercancel', onUp);
     }
+    handle.addEventListener('pointerdown', function(e) {
+      if (e.button !== undefined && e.button !== 0) return;
+      startX = e.clientX;
+      startW = sidebar.offsetWidth;
+      pointerId = e.pointerId;
+      handle.classList.add('active');
+      document.body.classList.add('tmd-resizing');
+      try { handle.setPointerCapture(e.pointerId); } catch(_) {}
+      handle.addEventListener('pointermove', onMove);
+      handle.addEventListener('pointerup', onUp);
+      handle.addEventListener('pointercancel', onUp);
+      e.preventDefault();
+    });
+    handle.addEventListener('dblclick', function() {
+      try { localStorage.removeItem('tmd-sidebar-w'); } catch(_) {}
+      sidebar.style.flexBasis = '';
+      sidebar.style.maxWidth = '';
+    });
     try {
-      var sw = localStorage.getItem('tmd-sidebar-w');
-      if (sw) { sidebar.style.flexBasis = sw + 'px'; sidebar.style.maxWidth = sw + 'px'; }
+      var sw = parseInt(localStorage.getItem('tmd-sidebar-w'), 10);
+      if (sw && sw >= MIN_W) applyWidth(Math.min(maxW(), sw));
     } catch(_) {}
   }
 })();
