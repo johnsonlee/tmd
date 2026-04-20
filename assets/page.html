@@ -14,6 +14,8 @@
     --accent: #58a6ff;
     --border: #30363d;
     --code-bg: #161b22;
+    --inline-code-bg: rgba(110, 118, 129, 0.4);
+    --inline-code-fg: #f0b3c0;
     --handle-hover: #58a6ff;
   }
 
@@ -28,6 +30,8 @@
       --accent: #0969da;
       --border: #d0d7de;
       --code-bg: #f6f8fa;
+      --inline-code-bg: rgba(175, 184, 193, 0.3);
+      --inline-code-fg: #cf222e;
       --handle-hover: #0969da;
     }
   }
@@ -40,6 +44,8 @@
     --accent: #0969da;
     --border: #d0d7de;
     --code-bg: #f6f8fa;
+    --inline-code-bg: rgba(175, 184, 193, 0.3);
+    --inline-code-fg: #cf222e;
     --handle-hover: #0969da;
   }
 
@@ -169,10 +175,12 @@
   a { color: var(--accent); text-decoration: none; }
   a:hover { text-decoration: underline; }
   code {
-    background: var(--code-bg);
-    padding: 0.1em 0.35em;
+    background: var(--inline-code-bg);
+    color: var(--inline-code-fg);
+    padding: 0.15em 0.4em;
     border-radius: 4px;
-    font-size: 0.95em;
+    font-size: 0.875em;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   }
   pre {
     background: var(--code-bg);
@@ -181,7 +189,12 @@
     overflow-x: auto;
     border: 1px solid var(--border);
   }
-  pre code { background: transparent; padding: 0; }
+  pre code {
+    background: transparent;
+    color: inherit;
+    padding: 0;
+    font-size: 0.9em;
+  }
   blockquote {
     border-left: 3px solid var(--accent);
     margin: 0;
