@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="{{INITIAL_THEME}}">
 <head>
 <meta charset="utf-8">
 <title>{{TITLE}}</title>
@@ -159,6 +159,24 @@
     border: 1px solid var(--border);
   }
   pre code { background: transparent; padding: 0; }
+  .tmd-mermaid { margin: 1rem 0; }
+  .tmd-mermaid-variant { display: none; }
+  [data-theme="dark"] .tmd-mermaid-dark { display: block; }
+  [data-theme="light"] .tmd-mermaid-light { display: block; }
+  .tmd-mermaid svg {
+    display: block;
+    max-width: 100%;
+    height: auto;
+  }
+  .tmd-mermaid-error {
+    margin: 1rem 0;
+    padding: 1rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--code-bg);
+  }
+  .tmd-mermaid-error p:first-child { margin-top: 0; }
+  .tmd-mermaid-error pre { margin-bottom: 0; }
   blockquote {
     border-left: 3px solid var(--accent);
     margin: 0;
@@ -193,40 +211,6 @@
     {{BODY}}
   </main>
 </div>
-<script type="module">
-import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
-
-function mermaidTheme() {
-  var t = document.documentElement.getAttribute('data-theme') ||
-    (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
-  return t === 'dark' ? 'dark' : 'default';
-}
-
-function renderMermaid() {
-  // Reset any previously rendered diagrams so mermaid.run() picks them up again
-  document.querySelectorAll('.mermaid[data-processed]').forEach(function(el) {
-    el.removeAttribute('data-processed');
-    el.innerHTML = el.getAttribute('data-source');
-  });
-  mermaid.initialize({ startOnLoad: false, theme: mermaidTheme() });
-  mermaid.run({ querySelector: '.mermaid' });
-}
-
-// Convert <pre><code class="language-mermaid"> to <div class="mermaid">
-document.querySelectorAll('pre > code.language-mermaid').forEach(function(el) {
-  var pre = el.parentElement;
-  var div = document.createElement('div');
-  div.className = 'mermaid';
-  div.textContent = el.textContent;
-  div.setAttribute('data-source', el.textContent);
-  pre.replaceWith(div);
-});
-
-renderMermaid();
-
-// Re-render on theme change
-window.__tmdRenderMermaid = renderMermaid;
-</script>
 <script>
 (function(){
   // --- SSE live reload ---
@@ -239,8 +223,7 @@ window.__tmdRenderMermaid = renderMermaid;
   var html = document.documentElement;
   var btn = document.getElementById('themeToggle');
   function currentTheme() {
-    return html.getAttribute('data-theme') ||
-      (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+    return html.getAttribute('data-theme') || '{{INITIAL_THEME}}';
   }
   function updateBtn() {
     btn.textContent = currentTheme() === 'dark' ? 'Light' : 'Dark';
@@ -250,7 +233,6 @@ window.__tmdRenderMermaid = renderMermaid;
     html.setAttribute('data-theme', next);
     try { localStorage.setItem('tmd-theme', next); } catch(_) {}
     updateBtn();
-    if (window.__tmdRenderMermaid) window.__tmdRenderMermaid();
   });
   var saved = null;
   try { saved = localStorage.getItem('tmd-theme'); } catch(_) {}

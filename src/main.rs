@@ -4,14 +4,19 @@
 //! with live-reload via SSE, and launches `carbonyl` pointed at the URL so the
 //! page shows up inside your terminal.
 
+use std::collections::{hash_map::DefaultHasher, HashMap};
+use std::hash::{Hash, Hasher};
+use std::io::Write;
 use std::path::PathBuf;
-use std::process::Stdio;
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::{
-    extract::State,
+    extract::{Request, State},
     http::{header, StatusCode},
+    middleware,
     response::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Response,
@@ -22,8 +27,8 @@ use axum::{
 use clap::Parser as ClapParser;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use pulldown_cmark::{
-    html as md_html, CowStr, Event as MdEvent, HeadingLevel, Options, Parser as MdParser, Tag,
-    TagEnd,
+    html as md_html, CodeBlockKind, CowStr, Event as MdEvent, HeadingLevel, Options,
+    Parser as MdParser, Tag, TagEnd,
 };
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
@@ -31,6 +36,7 @@ use tokio_stream::StreamExt;
 use tower_http::services::ServeDir;
 
 const PAGE_TMPL: &str = include_str!("../assets/page.html");
+static MMDC_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(ClapParser)]
 #[command(
@@ -44,6 +50,9 @@ struct Cli {
     /// Command used to open the rendered page.
     #[arg(long, default_value = "carbonyl")]
     browser: String,
+    /// Command used to render Mermaid blocks via mermaid-cli.
+    #[arg(long, default_value = "mmdc")]
+    mmdc: String,
     /// Only serve; do not launch the browser.
     #[arg(long)]
     no_open: bool,
@@ -55,6 +64,8 @@ struct Cli {
 #[derive(Clone)]
 struct AppState {
     md_path: Arc<PathBuf>,
+    doc_root: Arc<PathBuf>,
+    mmdc: Arc<String>,
     tx: broadcast::Sender<()>,
 }
 
@@ -62,6 +73,84 @@ struct TocEntry {
     level: u32,
     id: String,
     text: String,
+}
+
+#[derive(Clone, Copy)]
+enum Theme {
+    Dark,
+    Light,
+}
+
+impl Theme {
+    fn as_str(self) -> &'static str {
+        match self {
+            Theme::Dark => "dark",
+            Theme::Light => "light",
+        }
+    }
+
+    fn mermaid_cli_theme(self) -> &'static str {
+        match self {
+            Theme::Dark => "dark",
+            Theme::Light => "default",
+        }
+    }
+}
+
+#[derive(Clone)]
+struct MermaidSvgPair {
+    dark: String,
+    light: String,
+}
+
+fn ansi16_rgb(idx: u8) -> (u8, u8, u8) {
+    match idx {
+        0 => (0x00, 0x00, 0x00),
+        1 => (0x80, 0x00, 0x00),
+        2 => (0x00, 0x80, 0x00),
+        3 => (0x80, 0x80, 0x00),
+        4 => (0x00, 0x00, 0x80),
+        5 => (0x80, 0x00, 0x80),
+        6 => (0x00, 0x80, 0x80),
+        7 => (0xc0, 0xc0, 0xc0),
+        8 => (0x80, 0x80, 0x80),
+        9 => (0xff, 0x00, 0x00),
+        10 => (0x00, 0xff, 0x00),
+        11 => (0xff, 0xff, 0x00),
+        12 => (0x00, 0x00, 0xff),
+        13 => (0xff, 0x00, 0xff),
+        14 => (0x00, 0xff, 0xff),
+        15 => (0xff, 0xff, 0xff),
+        _ => (0x00, 0x00, 0x00),
+    }
+}
+
+fn is_light_ansi_color(idx: u8) -> bool {
+    let (r, g, b) = ansi16_rgb(idx);
+    let luminance = 0.2126 * (r as f32) + 0.7152 * (g as f32) + 0.0722 * (b as f32);
+    luminance >= 140.0
+}
+
+fn detect_terminal_theme() -> Theme {
+    if let Ok(value) = std::env::var("TMD_THEME") {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "light" => return Theme::Light,
+            "dark" => return Theme::Dark,
+            _ => {}
+        }
+    }
+
+    if let Ok(value) = std::env::var("COLORFGBG") {
+        if let Some(bg) = value.rsplit(';').next().and_then(|s| s.parse::<u8>().ok()) {
+            return if is_light_ansi_color(bg) {
+                Theme::Light
+            } else {
+                Theme::Dark
+            };
+        }
+    }
+
+    Theme::Dark
 }
 
 fn slugify(s: &str) -> String {
@@ -95,18 +184,146 @@ fn html_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
+fn mermaid_cache_key(source: &str, mmdc_cmd: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    source.hash(&mut hasher);
+    mmdc_cmd.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn mermaid_output_path() -> PathBuf {
+    let mut path = std::env::temp_dir();
+    let seq = MMDC_COUNTER.fetch_add(1, Ordering::Relaxed);
+    path.push(format!("tmd-mermaid-{}-{seq}.svg", std::process::id()));
+    path
+}
+
+fn run_mmdc(source: &str, mmdc_cmd: &str, theme: Theme) -> Result<String, String> {
+    let output_path = mermaid_output_path();
+    let mut child = Command::new(mmdc_cmd)
+        .arg("--input")
+        .arg("-")
+        .arg("--output")
+        .arg(&output_path)
+        .arg("--theme")
+        .arg(theme.mermaid_cli_theme())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("failed to start `{mmdc_cmd}`: {e}"))?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(source.as_bytes())
+            .map_err(|e| format!("failed to write Mermaid source to `{mmdc_cmd}`: {e}"))?;
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("failed to wait for `{mmdc_cmd}`: {e}"))?;
+
+    if !output.status.success() {
+        let _ = std::fs::remove_file(&output_path);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let message = stderr.trim();
+        return Err(if message.is_empty() {
+            format!("`{mmdc_cmd}` exited with status {}", output.status)
+        } else {
+            format!("`{mmdc_cmd}` failed: {message}")
+        });
+    }
+
+    let svg = std::fs::read_to_string(&output_path).map_err(|e| {
+        let _ = std::fs::remove_file(&output_path);
+        format!("failed to read `{}`: {e}", output_path.display())
+    })?;
+    let _ = std::fs::remove_file(&output_path);
+    Ok(svg)
+}
+
+fn render_mermaid_pair(
+    source: &str,
+    mmdc_cmd: &str,
+    cache: &mut HashMap<u64, Result<MermaidSvgPair, String>>,
+) -> Result<MermaidSvgPair, String> {
+    let key = mermaid_cache_key(source, mmdc_cmd);
+    if let Some(cached) = cache.get(&key) {
+        return cached.clone();
+    }
+
+    let rendered = (|| {
+        Ok(MermaidSvgPair {
+            dark: run_mmdc(source, mmdc_cmd, Theme::Dark)?,
+            light: run_mmdc(source, mmdc_cmd, Theme::Light)?,
+        })
+    })();
+    cache.insert(key, rendered.clone());
+    rendered
+}
+
+fn mermaid_error_html(source: &str, error: &str) -> String {
+    format!(
+        concat!(
+            r#"<div class="tmd-mermaid-error">"#,
+            r#"<p><strong>Mermaid render failed via mmdc.</strong></p>"#,
+            r#"<p>{}</p>"#,
+            r#"<pre><code class="language-mermaid">{}</code></pre>"#,
+            r#"</div>"#
+        ),
+        html_escape(error),
+        html_escape(source)
+    )
+}
+
+fn mermaid_html(pair: &MermaidSvgPair) -> String {
+    format!(
+        concat!(
+            r#"<div class="tmd-mermaid">"#,
+            r#"<div class="tmd-mermaid-variant tmd-mermaid-dark">{}</div>"#,
+            r#"<div class="tmd-mermaid-variant tmd-mermaid-light">{}</div>"#,
+            r#"</div>"#
+        ),
+        pair.dark, pair.light
+    )
+}
+
 /// Walks the markdown event stream, injecting auto-generated anchor IDs on
 /// every heading that does not already have one, and collecting a TOC.
-fn process_events<'a>(parser: MdParser<'a>) -> (Vec<MdEvent<'a>>, Vec<TocEntry>) {
+fn process_events<'a>(parser: MdParser<'a>, mmdc_cmd: &str) -> (Vec<MdEvent<'a>>, Vec<TocEntry>) {
     let mut events: Vec<MdEvent<'a>> = Vec::new();
     let mut toc: Vec<TocEntry> = Vec::new();
     let mut heading_text: Option<String> = None;
     let mut heading_start_idx: Option<usize> = None;
+    let mut mermaid_block: Option<String> = None;
+    let mut mermaid_cache: HashMap<u64, Result<MermaidSvgPair, String>> = HashMap::new();
     let mut id_counts: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
 
     for ev in parser {
+        if let Some(buf) = &mut mermaid_block {
+            match ev {
+                MdEvent::Text(t) | MdEvent::Code(t) => buf.push_str(&t),
+                MdEvent::SoftBreak | MdEvent::HardBreak => buf.push('\n'),
+                MdEvent::End(TagEnd::CodeBlock) => {
+                    let block = mermaid_block.take().unwrap_or_default();
+                    let html = match render_mermaid_pair(&block, mmdc_cmd, &mut mermaid_cache) {
+                        Ok(pair) => mermaid_html(&pair),
+                        Err(err) => mermaid_error_html(&block, &err),
+                    };
+                    events.push(MdEvent::Html(CowStr::Boxed(html.into_boxed_str())));
+                }
+                _ => {}
+            }
+            continue;
+        }
+
         match &ev {
+            MdEvent::Start(Tag::CodeBlock(CodeBlockKind::Fenced(lang)))
+                if lang.as_ref() == "mermaid" =>
+            {
+                mermaid_block = Some(String::new());
+            }
             MdEvent::Start(Tag::Heading { .. }) => {
                 heading_text = Some(String::new());
                 heading_start_idx = Some(events.len());
@@ -184,7 +401,7 @@ fn render_toc(entries: &[TocEntry]) -> String {
     out
 }
 
-fn render_page(md_path: &std::path::Path) -> std::io::Result<String> {
+fn render_page(md_path: &std::path::Path, mmdc_cmd: &str) -> std::io::Result<String> {
     let src = std::fs::read_to_string(md_path)?;
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_TABLES);
@@ -194,7 +411,7 @@ fn render_page(md_path: &std::path::Path) -> std::io::Result<String> {
     opts.insert(Options::ENABLE_SMART_PUNCTUATION);
     opts.insert(Options::ENABLE_HEADING_ATTRIBUTES);
     let parser = MdParser::new_ext(&src, opts);
-    let (events, toc) = process_events(parser);
+    let (events, toc) = process_events(parser, mmdc_cmd);
     let mut body = String::new();
     md_html::push_html(&mut body, events.into_iter());
     let toc_html = render_toc(&toc);
@@ -202,8 +419,10 @@ fn render_page(md_path: &std::path::Path) -> std::io::Result<String> {
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("tmd");
+    let theme = detect_terminal_theme();
     Ok(PAGE_TMPL
         .replace("{{TITLE}}", title)
+        .replace("{{INITIAL_THEME}}", theme.as_str())
         .replace("{{TOC}}", &toc_html)
         .replace("{{BODY}}", &body))
 }
@@ -211,7 +430,8 @@ fn render_page(md_path: &std::path::Path) -> std::io::Result<String> {
 async fn index(State(st): State<AppState>) -> Response {
     match tokio::task::spawn_blocking({
         let p = st.md_path.clone();
-        move || render_page(&p)
+        let mmdc = st.mmdc.clone();
+        move || render_page(&p, mmdc.as_str())
     })
     .await
     {
@@ -226,6 +446,43 @@ async fn index(State(st): State<AppState>) -> Response {
         Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
+}
+
+async fn md_intercept(
+    State(st): State<AppState>,
+    request: Request,
+    next: middleware::Next,
+) -> Response {
+    if request.uri().path().ends_with(".md") {
+        let rel = request.uri().path().trim_start_matches('/');
+        let md_file = st.doc_root.join(rel);
+        if let Ok(canonical) = md_file.canonicalize() {
+            if canonical.starts_with(&*st.doc_root) {
+                let mmdc = st.mmdc.clone();
+                return match tokio::task::spawn_blocking(move || {
+                    render_page(&canonical, mmdc.as_str())
+                })
+                .await
+                {
+                    Ok(Ok(html)) => (
+                        [
+                            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+                            (header::CACHE_CONTROL, "no-store"),
+                        ],
+                        html,
+                    )
+                        .into_response(),
+                    Ok(Err(e)) => {
+                        (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+                    }
+                    Err(e) => {
+                        (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+                    }
+                };
+            }
+        }
+    }
+    next.run(request).await
 }
 
 async fn events(
@@ -288,6 +545,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (tx, _) = broadcast::channel::<()>(16);
     let state = AppState {
         md_path: Arc::new(md_path.clone()),
+        doc_root: Arc::new(doc_root.clone()),
+        mmdc: Arc::new(cli.mmdc.clone()),
         tx: tx.clone(),
     };
 
@@ -299,7 +558,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/", get(index))
         .route("/__tmd/events", get(events))
         .fallback_service(ServeDir::new(&doc_root))
-        .with_state(state);
+        .with_state(state.clone())
+        .layer(middleware::from_fn_with_state(state, md_intercept));
 
     eprintln!(
         "tmd: serving {} at {}",
