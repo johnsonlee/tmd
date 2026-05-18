@@ -8,6 +8,7 @@ description = "Terminal markdown previewer, powered by carbonyl"
 axum = "0.7"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "process", "sync", "time", "net"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
+tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.5", features = ["fs"] }
 pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
 notify = "6"
