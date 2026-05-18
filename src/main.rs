@@ -4,13 +4,13 @@
 //! with live-reload via SSE, and launches `carbonyl` pointed at the URL so the
 //! page shows up inside your terminal.
 
-use std::path::PathBuf;
+use std::path::{Component, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::{
-    extract::State,
+    extract::{Path as AxumPath, Request, State},
     http::{header, StatusCode},
     response::{
         sse::{Event, KeepAlive, Sse},
@@ -28,6 +28,7 @@ use pulldown_cmark::{
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
+use tower::ServiceExt;
 use tower_http::services::ServeDir;
 
 const PAGE_TMPL: &str = include_str!("../assets/page.html");
@@ -55,6 +56,7 @@ struct Cli {
 #[derive(Clone)]
 struct AppState {
     md_path: Arc<PathBuf>,
+    doc_root: Arc<PathBuf>,
     tx: broadcast::Sender<()>,
 }
 
@@ -102,8 +104,7 @@ fn process_events<'a>(parser: MdParser<'a>) -> (Vec<MdEvent<'a>>, Vec<TocEntry>)
     let mut toc: Vec<TocEntry> = Vec::new();
     let mut heading_text: Option<String> = None;
     let mut heading_start_idx: Option<usize> = None;
-    let mut id_counts: std::collections::HashMap<String, usize> =
-        std::collections::HashMap::new();
+    let mut id_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
 
     for ev in parser {
         match &ev {
@@ -208,13 +209,36 @@ fn render_page(md_path: &std::path::Path) -> std::io::Result<String> {
         .replace("{{BODY}}", &body))
 }
 
-async fn index(State(st): State<AppState>) -> Response {
-    match tokio::task::spawn_blocking({
-        let p = st.md_path.clone();
-        move || render_page(&p)
-    })
-    .await
-    {
+fn resolve_doc_path(doc_root: &std::path::Path, path: &str) -> Option<PathBuf> {
+    let mut resolved = doc_root.to_path_buf();
+    for component in std::path::Path::new(path).components() {
+        match component {
+            Component::Normal(part) => resolved.push(part),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+    Some(resolved)
+}
+
+fn is_markdown_path(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown"))
+        .unwrap_or(false)
+}
+
+fn io_error_response(err: std::io::Error) -> Response {
+    let status = match err.kind() {
+        std::io::ErrorKind::NotFound => StatusCode::NOT_FOUND,
+        std::io::ErrorKind::PermissionDenied => StatusCode::FORBIDDEN,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    (status, err.to_string()).into_response()
+}
+
+async fn render_markdown(md_path: PathBuf) -> Response {
+    match tokio::task::spawn_blocking(move || render_page(&md_path)).await {
         Ok(Ok(html)) => (
             [
                 (header::CONTENT_TYPE, "text/html; charset=utf-8"),
@@ -223,7 +247,30 @@ async fn index(State(st): State<AppState>) -> Response {
             html,
         )
             .into_response(),
-        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Ok(Err(e)) => io_error_response(e),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn index(State(st): State<AppState>) -> Response {
+    render_markdown(st.md_path.as_ref().clone()).await
+}
+
+async fn markdown_or_static(
+    State(st): State<AppState>,
+    AxumPath(path): AxumPath<String>,
+    req: Request,
+) -> Response {
+    let Some(doc_path) = resolve_doc_path(&st.doc_root, &path) else {
+        return (StatusCode::FORBIDDEN, "invalid path").into_response();
+    };
+
+    if is_markdown_path(&doc_path) {
+        return render_markdown(doc_path).await;
+    }
+
+    match ServeDir::new(st.doc_root.as_ref()).oneshot(req).await {
+        Ok(response) => response.into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
@@ -288,6 +335,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (tx, _) = broadcast::channel::<()>(16);
     let state = AppState {
         md_path: Arc::new(md_path.clone()),
+        doc_root: Arc::new(doc_root.clone()),
         tx: tx.clone(),
     };
 
@@ -298,7 +346,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = Router::new()
         .route("/", get(index))
         .route("/__tmd/events", get(events))
-        .fallback_service(ServeDir::new(&doc_root))
+        .route("/*path", get(markdown_or_static))
         .with_state(state);
 
     eprintln!(
@@ -323,7 +371,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "tmd: failed to launch {:?}: {} (server still at {})",
                     cli.browser, e, url
                 );
-                eprintln!("tmd: ensure `carbonyl` is installed (brew install johnsonlee/tap/carbonyl)");
+                eprintln!(
+                    "tmd: ensure `carbonyl` is installed (brew install johnsonlee/tap/carbonyl)"
+                );
                 None
             }
         }
